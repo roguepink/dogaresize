@@ -81,6 +81,7 @@
   <div class="bar" id="bar"><i></i></div>
   <button type="button" class="big" id="btnStart">小さくする</button>
   <p class="hint" id="workHint"></p>
+  <p class="hint hidden" id="diag" style="font-size:13px;word-break:break-all"></p>
   <button type="button" class="big green hidden" id="btnResume">▶ つづきから</button>
   <button type="button" class="big sub hidden" id="btnCancel">やめる</button>
 </div>
@@ -112,10 +113,10 @@ var CONFIG = {
   FPS: 30, CHUNK_MS: 1000, LONG_SEC: 10 * 60,
   // できあがりの形式。上から順に、このブラウザで作れるものを使う(iPhone は mp4、Android の Chrome は たいてい webm)
   MIMES: ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4;codecs=avc1,opus', 'video/mp4',
-          'video/webm;codecs=h264,opus', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
+          'video/webm;codecs=h264,opus', 'video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm']   // スマホでは軽い vp8 を vp9 より先に
 };
 var $ = function (id) { return document.getElementById(id); };
-var state = { mode: CONFIG.DEFAULT_MODE, file: null, meta: null, srcUrl: null, out: null, outUrl: null, job: null };
+var state = { mode: CONFIG.DEFAULT_MODE, file: null, meta: null, srcUrl: null, out: null, outUrl: null, job: null, badMimes: [], tries: 0 };
 try { var saved = localStorage.getItem(CONFIG.MODE_KEY); if (saved && CONFIG.MODES[saved]) state.mode = saved; } catch (e) {}
 
 var SUPPORTED = !!(window.MediaRecorder && window.HTMLCanvasElement && HTMLCanvasElement.prototype.captureStream && (window.AudioContext || window.webkitAudioContext));
@@ -151,8 +152,8 @@ function plan(mode, w, h, sec, bytes) {
 }
 function mb(n) { return n < 1024 * 1024 ? Math.max(1, Math.round(n / 1024)) + 'KB' : (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + 'MB'; }
 function mmss(sec) { sec = Math.max(0, Math.round(sec)); var m = Math.floor(sec / 60), s = sec % 60; return m ? m + '分' + (s ? s + '秒' : '') : s + '秒'; }
-function pickMime() {
-  for (var i = 0; i < CONFIG.MIMES.length; i++) { try { if (MediaRecorder.isTypeSupported(CONFIG.MIMES[i])) return CONFIG.MIMES[i]; } catch (e) {} }
+function pickMime() {                      // 一度失敗した形式(state.badMimes)は飛ばす
+  for (var i = 0; i < CONFIG.MIMES.length; i++) { try { if (state.badMimes.indexOf(CONFIG.MIMES[i]) < 0 && MediaRecorder.isTypeSupported(CONFIG.MIMES[i])) return CONFIG.MIMES[i]; } catch (e) {} }
   return '';
 }
 function extOf(mime) { return /mp4/i.test(mime || '') ? 'mp4' : 'webm'; }
@@ -229,7 +230,7 @@ function shrinkVideo(video, meta, mode, bytes, onProgress) {
       ok({ file: new File([blob], outName(state.file && state.file.name, ext), { type: blob.type, lastModified: Date.now() }), w: dim.w, h: dim.h, ext: ext, mime: blob.type });
     }
     rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
-    rec.onerror = function (e) { stop((e && e.error) || new Error('録画に失敗')); };
+    rec.onerror = function (e) { var err = (e && e.error) || new Error('録画に失敗'); try { err.kind = 'rec'; err.mime = mime; } catch (x) {} stop(err); };
     rec.onstop = function () { if (!cancelled) finish(); };
     var rvfc = typeof video.requestVideoFrameCallback === 'function', last = 0;
     function draw() {
@@ -240,7 +241,7 @@ function shrinkVideo(video, meta, mode, bytes, onProgress) {
       if (rvfc) video.requestVideoFrameCallback(draw); else requestAnimationFrame(draw);
     }
     video.onended = function () { onProgress(meta.dur, meta.dur); setTimeout(function () { stop(); }, 150); };   // 最後のコマまで録ってから止める
-    video.onerror = function () { stop(new Error('再生に失敗')); };
+    video.onerror = function () { var ve = video.error, err = new Error('再生に失敗 ' + (ve ? ve.code + ' ' + (ve.message || '') : '')); err.kind = 'video'; stop(err); };
     job.cancel = function () { var e = new Error('cancel'); e.name = 'AbortError'; stop(e); };
     /* いったん止める / つづきから。止まっている間は録画も止める(止まった絵や無音が入らないように)。
        再開の再生は iPhone だと「人のタップ」がないと拒否されることがあるので、だめなら「つづきから」ボタンを出す */
@@ -285,7 +286,7 @@ function showInfo() {
 async function pickFile(file) {
   if (!file || state.job) return;
   clearAll();
-  state.file = file;
+  state.file = file; state.tries = 0; $('diag').classList.add('hidden');
   $('status').textContent = '動画を読んでいます…';
   $('btnPick').classList.add('hidden');
   try {
@@ -321,16 +322,33 @@ async function start() {
     state.out = r; showResult(t0);
   } catch (e) {
     console.error(e);
-    $('status').textContent = e && e.name === 'AbortError' ? 'やめました' : 'うまくいきませんでした。もう一度ためしてください(' + (e && e.message || e) + ')';
+    state.job = null; letSleep();
+    if (e && e.name === 'AbortError') { $('status').textContent = 'やめました'; }
+    else {
+      // 録画の形式が原因なら、その形式を外して 自動でもう一度(2回まで)。それ以外は、動画を読み直してから「小さくする」を押せるようにする
+      var retry = e && e.kind === 'rec' && state.tries < 2;
+      if (retry) { state.tries++; if (job.mime) state.badMimes.push(job.mime); $('status').textContent = '別の方式で やり直しています…'; }
+      else { $('status').textContent = 'うまくいきませんでした。「小さくする」を もう一度押してみてください'; $('diag').textContent = diag(e, job); $('diag').classList.remove('hidden'); }
+      try { state.meta = await loadVideo(video, state.file); } catch (x) { console.error(x); $('status').textContent = 'この動画が読めなくなりました。「べつの動画をえらぶ」から やり直してください'; retry = false; }
+      if (retry) { chips.forEach(function (c) { c.disabled = false; }); $('btnCancel').classList.add('hidden'); $('btnResume').classList.add('hidden'); return start(); }
+    }
     $('btnStart').classList.remove('hidden');
   } finally {
     state.job = null; letSleep(); chips.forEach(function (c) { c.disabled = false; });
     $('btnCancel').classList.add('hidden'); $('btnResume').classList.add('hidden'); $('bar').style.display = 'none'; $('btnReset').classList.remove('hidden');
   }
 }
+/* 失敗したときに画面に出す「くわしい情報」(スクショで送ってもらえば原因が分かる) */
+function diag(e, job) {
+  var ua = navigator.userAgent, os = /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iPhone' : 'PC';
+  var br = (ua.match(/(CriOS|Chrome|Version)\/(\d+)/) || [])[0] || '', line = /\bLine\//.test(ua) ? ' LINE内' : '';
+  var m = state.meta || {}, f = state.file || {};
+  return '[' + os + ' ' + br + line + ' / 形式: ' + ((job && job.mime) || '既定') + ' / 動画: ' + (f.type || '?') + ' ' + (m.w || '?') + '×' + (m.h || '?') + ' ' + mmss(m.dur || 0) + ' ' + mb(f.size || 0) +
+    ' / できあがり: ' + (job && job.dim ? job.dim.w + '×' + job.dim.h : '?') + ' / 原因: ' + (e && (e.name + ' ' + e.message) || e) + ']';
+}
 function showResult(t0) {
   var r = state.out, before = state.file.size, after = r.file.size;
-  $('work').classList.add('hidden'); $('status').textContent = '';
+  $('work').classList.add('hidden'); $('status').textContent = ''; state.tries = 0;
   $('summary').innerHTML = 'できました<br>' + mb(before) + ' → <span style="color:#8df0b2">' + mb(after) + '</span>' +
     '<small>' + (before > after ? Math.round((1 - after / before) * 100) + '% 小さくなりました' : 'もとの動画より大きくなりました') + '(' + r.w + '×' + r.h + '・' + r.ext + ')</small>';
   if (state.outUrl) URL.revokeObjectURL(state.outUrl);
