@@ -47,8 +47,8 @@
   .bar { height: 12px; background: #0e0822; border-radius: 999px; overflow: hidden; margin: 12px 0; display: none; }
   .bar i { display: block; height: 100%; width: 0; background: var(--green); transition: width .3s; }
   video { display: block; width: 100%; max-height: 46vh; background: #000; border-radius: 12px; border: 2px solid var(--ink); margin-bottom: 10px; }
-  #info { font-size: 19px; font-weight: 900; text-align: center; margin: 0 0 12px; line-height: 1.5; }
-  #info b { color: #8df0b2; }
+  #info { font-size: 18px; font-weight: 900; text-align: center; margin: 0 0 12px; line-height: 1.5; }
+  #info b { color: #8df0b2; white-space: nowrap; }
   #summary { font-size: 24px; font-weight: 900; text-align: center; margin: 0 0 12px; line-height: 1.45; }
   #summary small { display: block; font-size: 16px; font-weight: 700; color: var(--muted); }
   .hint { font-size: 16px; color: var(--muted); line-height: 1.65; margin: 12px 0 0; }
@@ -64,11 +64,11 @@
 <div class="box" id="pick">
   <p class="label">どのくらい小さくする?</p>
   <div class="chips" id="chips">
-    <button type="button" class="chip" data-mode="s">小さめ<small>1分 約5MB</small></button>
-    <button type="button" class="chip on" data-mode="m">ふつう<small>1分 約10MB</small></button>
-    <button type="button" class="chip" data-mode="l">大きめ<small>1分 約20MB</small></button>
+    <button type="button" class="chip" data-mode="p50">50%<small>重さを半分に</small></button>
+    <button type="button" class="chip on" data-mode="p25">25%<small>4分の1に</small></button>
+    <button type="button" class="chip" data-mode="p10">10%<small>10分の1に</small></button>
   </div>
-  <p class="hint">「ふつう」は スマホで見てきれいな大きさ(720p)。1分の動画で 約10MB。LINE にちょうどいい重さです。</p>
+  <p class="hint">もとの動画の重さに対する割合です。「25%」なら、スマホで撮った1分の動画(60MB くらい)が 約15MB に。LINE やメールにちょうどいい重さです。</p>
 </div>
 
 <label class="big" for="file" id="btnPick">動画をえらぶ</label>
@@ -102,14 +102,13 @@
 <script>
 'use strict';
 var CONFIG = {
-  MODE_KEY: 'dogaresize-mode', DEFAULT_MODE: 'm',
-  // short: 短い辺をこの大きさまで縮める(小さい動画は そのまま)。vbps / abps: 絵と音の 1秒あたりのデータ量(ビット)
-  MODES: {
-    s: { short: 480,  vbps:  600000, abps:  96000 },   // 1分 約5MB(音は 96k より下げない: mp4 の音の圧縮機が 64k を受け付けず失敗した 2026-10-12)
-    m: { short: 720,  vbps: 1200000, abps:  96000 },   // 1分 約10MB
-    l: { short: 1080, vbps: 2500000, abps: 128000 }    // 1分 約20MB
-  },
-  FPS: 30, MIN_VBPS: 250000, CHUNK_MS: 1000, LONG_SEC: 10 * 60,
+  MODE_KEY: 'dogaresize-mode', DEFAULT_MODE: 'p25',
+  // pct: もとの重さに対する できあがりの割合(%)。ボタンの文字は上の HTML(data-mode が同じもの)
+  MODES: { p50: { pct: 50 }, p25: { pct: 25 }, p10: { pct: 10 } },
+  ABPS: 96000,                 // 音の 1秒あたりのデータ量。96k より下げない(mp4 の音の圧縮機が 64k を受け付けず失敗した 2026-10-12)
+  MIN_VBPS: 250000, MAX_VBPS: 8000000,   // 絵の 1秒あたりのデータ量の下限・上限
+  SHORTS: [1080, 720, 480, 360], MIN_BPP: 0.035,   // 大きさの候補(短い辺)と、1コマ1画素あたり最低限ほしいデータ量(これを下回るとブロックだらけになる)
+  FPS: 30, CHUNK_MS: 1000, LONG_SEC: 10 * 60,
   // できあがりの形式。上から順に、このブラウザで作れるものを使う(iPhone は mp4、Android の Chrome は たいてい webm)
   MIMES: ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4;codecs=avc1,opus', 'video/mp4',
           'video/webm;codecs=h264,opus', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
@@ -137,11 +136,18 @@ function outSize(w, h, shortSide) {                                  // 短い�
   var s = Math.min(1, shortSide / Math.min(w, h));
   return { w: even(w * s), h: even(h * s), scale: s };
 }
-function bitrate(mode, w, h) {                                       // 目標より小さい絵なら、絵の大きさに応じてデータ量も減らす
-  var t = CONFIG.MODES[mode] || CONFIG.MODES.m, ref = t.short * t.short * 16 / 9;
-  return { v: Math.max(CONFIG.MIN_VBPS, Math.round(t.vbps * Math.min(1, (w * h) / ref))), a: t.abps };
+/* 割合(pct)から、できあがりの データ量と大きさを決める。
+   もとの動画の 1秒あたりのデータ量 × pct% を目標にし、絵の大きさは「1画素あたりのデータ量が足りる いちばん大きいもの」を選ぶ */
+function plan(mode, w, h, sec, bytes) {
+  var t = CONFIG.MODES[mode] || CONFIG.MODES[CONFIG.DEFAULT_MODE], total = bytes * 8 / Math.max(0.1, sec) * t.pct / 100;
+  var v = Math.min(CONFIG.MAX_VBPS, Math.max(CONFIG.MIN_VBPS, Math.round(total - CONFIG.ABPS)));
+  var dim = null;
+  for (var i = 0; i < CONFIG.SHORTS.length; i++) {
+    dim = outSize(w, h, CONFIG.SHORTS[i]);
+    if (v / (dim.w * dim.h * CONFIG.FPS) >= CONFIG.MIN_BPP) break;      // 足りるなら これにする。足りなければ 1つ小さい候補へ
+  }
+  return { v: v, a: CONFIG.ABPS, w: dim.w, h: dim.h, pct: t.pct, est: (v + CONFIG.ABPS) * sec / 8 };
 }
-function estimate(mode, w, h, sec) { var b = bitrate(mode, w, h); return (b.v + b.a) * sec / 8; }   // できあがりの重さ(バイト)の見込み
 function mb(n) { return n < 1024 * 1024 ? Math.max(1, Math.round(n / 1024)) + 'KB' : (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + 'MB'; }
 function mmss(sec) { sec = Math.max(0, Math.round(sec)); var m = Math.floor(sec / 60), s = sec % 60; return m ? m + '分' + (s ? s + '秒' : '') : s + '秒'; }
 function pickMime() {
@@ -194,8 +200,8 @@ function audioTrack(video) {
 }
 
 /* ---- 小さくする: 動画を再生しながら、小さい絵に描き直して録画する(動画と同じ時間がかかる) ---- */
-function shrinkVideo(video, meta, mode, onProgress) {
-  var t = CONFIG.MODES[mode] || CONFIG.MODES.m, dim = outSize(meta.w, meta.h, t.short), br = bitrate(mode, dim.w, dim.h);
+function shrinkVideo(video, meta, mode, bytes, onProgress) {
+  var br = plan(mode, meta.w, meta.h, meta.dur, bytes), dim = { w: br.w, h: br.h };
   var canvas = document.createElement('canvas'); canvas.width = dim.w; canvas.height = dim.h;
   var ctx = canvas.getContext('2d', { alpha: false }); ctx.imageSmoothingQuality = 'high';
   var stream = canvas.captureStream(CONFIG.FPS);
@@ -252,8 +258,9 @@ function keepAwake() { if (navigator.wakeLock && navigator.wakeLock.request) nav
 function letSleep() { if (wake) { wake.release().catch(function () {}); wake = null; } }
 
 function showInfo() {
-  var m = state.meta, t = CONFIG.MODES[state.mode], dim = outSize(m.w, m.h, t.short), est = estimate(state.mode, dim.w, dim.h, m.dur);
-  $('info').innerHTML = mmss(m.dur) + '・' + m.w + '×' + m.h + '・' + mb(state.file.size) + '<br>→ できあがり <b>約' + mb(est) + '</b>(' + dim.w + '×' + dim.h + ')';
+  var m = state.meta, pl = plan(state.mode, m.w, m.h, m.dur, state.file.size), tiny = pl.est >= state.file.size * 0.9;
+  $('info').innerHTML = mmss(m.dur) + '・' + m.w + '×' + m.h + '・' + mb(state.file.size) + '<br>→ できあがり <b>約' + mb(pl.est) + '</b>' +
+    (tiny ? '<br><span style="color:#ffd0d0">もともと軽い動画なので、これ以上は小さくなりません</span>' : '<br>(' + pl.w + '×' + pl.h + ' になります)');
   $('btnStart').innerHTML = '小さくする<small>' + mmss(m.dur) + ' くらいかかります</small>';
   var long = m.dur > CONFIG.LONG_SEC;
   $('workHint').className = 'hint' + (long ? ' warn' : '');
@@ -286,7 +293,7 @@ async function start() {
   $('bar').style.display = 'block'; $('bar').firstChild.style.width = '0%';
   $('workHint').className = 'hint'; $('workHint').textContent = '終わるまで この画面のままにしてください。';
   keepAwake();
-  var job = state.job = shrinkVideo(video, state.meta, state.mode, function (cur, dur) {
+  var job = state.job = shrinkVideo(video, state.meta, state.mode, state.file.size, function (cur, dur) {
     $('bar').firstChild.style.width = Math.round(cur / dur * 100) + '%';
     $('status').textContent = '小さくしています… ' + mmss(cur) + ' / ' + mmss(dur) + '(残り 約' + mmss(dur - cur) + ')';
   });
