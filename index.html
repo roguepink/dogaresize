@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#140c2a">
+<title>動画リサイズ</title>
+<meta name="description" content="動画をえらぶだけで、ぐっと小さくします。LINEやメールで送りやすく。動画はスマホの中だけで処理します。">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="動画リサイズ">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta property="og:type" content="website">
+<meta property="og:title" content="動画リサイズ">
+<meta property="og:description" content="動画をえらぶだけで、ぐっと小さくします。LINEやメールで送りやすく。動画はスマホの中だけで処理します。">
+<meta property="og:image" content="https://roguepink.github.io/dogaresize/ogp.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+  :root { color-scheme: dark; --ink: #1b1430; --bg: #140c2a; --card: #241449; --yellow: #ffe066; --green: #06c755; --text: #fff; --muted: #ece7fa; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
+    font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", "Noto Sans JP", system-ui, sans-serif; }
+  body { padding: calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 32px); max-width: 560px; margin: 0 auto; }
+  h1 { margin: 0 0 8px; font-size: 32px; font-weight: 900; line-height: 1.25; }
+  .lead { margin: 0 0 18px; color: var(--muted); font-size: 17px; line-height: 1.65; }
+  .box { background: var(--card); border: 3px solid var(--ink); border-radius: 18px; padding: 14px; margin-bottom: 14px; }
+  .label { font-size: 17px; font-weight: 800; color: #fff; margin: 0 0 10px; }
+  .chips { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .chip { font: inherit; font-weight: 900; font-size: 18px; padding: 12px 4px; border: 3px solid var(--ink); border-radius: 999px;
+    background: #3a2a66; color: #fff; cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent; line-height: 1.25; }
+  .chip small { display: block; font-weight: 700; font-size: 13px; opacity: .95; margin-top: 2px; }
+  .chip.on { background: var(--yellow); color: var(--ink); }
+  .chip:disabled { opacity: .5; cursor: default; }
+  .big { display: block; width: 100%; font: inherit; font-weight: 900; font-size: 24px; padding: 20px 16px; border: 4px solid var(--ink); border-radius: 999px;
+    background: var(--yellow); color: var(--ink); cursor: pointer; text-align: center; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+  .big.green { background: var(--green); color: #fff; }
+  .big.sub { background: #fff; font-size: 20px; padding: 16px; }
+  .big:disabled { opacity: .45; cursor: default; }
+  .big + .big { margin-top: 10px; }
+  .big small { display: block; font-size: 15px; font-weight: 800; margin-top: 2px; }
+  input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  #status { min-height: 1.5em; margin: 12px 0 0; font-weight: 800; text-align: center; font-size: 18px; line-height: 1.45; }
+  .bar { height: 12px; background: #0e0822; border-radius: 999px; overflow: hidden; margin: 12px 0; display: none; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--green); transition: width .3s; }
+  video { display: block; width: 100%; max-height: 46vh; background: #000; border-radius: 12px; border: 2px solid var(--ink); margin-bottom: 10px; }
+  #info { font-size: 19px; font-weight: 900; text-align: center; margin: 0 0 12px; line-height: 1.5; }
+  #info b { color: #8df0b2; }
+  #summary { font-size: 24px; font-weight: 900; text-align: center; margin: 0 0 12px; line-height: 1.45; }
+  #summary small { display: block; font-size: 16px; font-weight: 700; color: var(--muted); }
+  .hint { font-size: 16px; color: var(--muted); line-height: 1.65; margin: 12px 0 0; }
+  .hint.warn { color: #ffd0d0; font-weight: 700; }
+  .hidden { display: none !important; }
+  footer { font-size: 15px; color: var(--muted); line-height: 1.6; margin-top: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<h1>🎬 動画リサイズ</h1>
+<p class="lead">動画をえらぶだけで、ぐっと小さくします。動画はこのスマホの中だけで処理し、どこにも送りません。</p>
+
+<div class="box" id="pick">
+  <p class="label">どのくらい小さくする?</p>
+  <div class="chips" id="chips">
+    <button type="button" class="chip" data-mode="s">小さめ<small>1分 約5MB</small></button>
+    <button type="button" class="chip on" data-mode="m">ふつう<small>1分 約10MB</small></button>
+    <button type="button" class="chip" data-mode="l">大きめ<small>1分 約20MB</small></button>
+  </div>
+  <p class="hint">「ふつう」は スマホで見てきれいな大きさ(720p)。1分の動画で 約10MB。LINE にちょうどいい重さです。</p>
+</div>
+
+<label class="big" for="file" id="btnPick">動画をえらぶ</label>
+<input type="file" id="file" accept="video/*">
+<p id="status"></p>
+
+<div class="box hidden" id="work">
+  <video id="src" playsinline muted preload="metadata"></video>
+  <p id="info"></p>
+  <div class="bar" id="bar"><i></i></div>
+  <button type="button" class="big" id="btnStart">小さくする</button>
+  <p class="hint" id="workHint"></p>
+  <button type="button" class="big sub hidden" id="btnCancel">やめる</button>
+</div>
+
+<div class="box hidden" id="result">
+  <p id="summary"></p>
+  <video id="out" playsinline controls></video>
+  <button type="button" class="big green" id="btnShare">LINEなどで送る</button>
+  <button type="button" class="big sub" id="btnSave">保存する</button>
+  <p class="hint" id="shareHint"></p>
+</div>
+
+<button type="button" class="big sub hidden" id="btnReset">べつの動画をえらぶ</button>
+<div class="box hidden" id="installBox">
+  <button type="button" class="big sub" id="btnInstall">📲 ホーム画面に入れる(アプリにする)</button>
+  <p class="hint" id="installHint">入れると、アイコンから全画面で開けて、電波がなくても使えます。</p>
+</div>
+<footer>無料・登録なし。動画はどこにも送らず、このスマホの中だけで小さくします。</footer>
+
+<script>
+'use strict';
+var CONFIG = {
+  MODE_KEY: 'dogaresize-mode', DEFAULT_MODE: 'm',
+  // short: 短い辺をこの大きさまで縮める(小さい動画は そのまま)。vbps / abps: 絵と音の 1秒あたりのデータ量(ビット)
+  MODES: {
+    s: { short: 480,  vbps:  600000, abps:  96000 },   // 1分 約5MB(音は 96k より下げない: mp4 の音の圧縮機が 64k を受け付けず失敗した 2026-10-12)
+    m: { short: 720,  vbps: 1200000, abps:  96000 },   // 1分 約10MB
+    l: { short: 1080, vbps: 2500000, abps: 128000 }    // 1分 約20MB
+  },
+  FPS: 30, MIN_VBPS: 250000, CHUNK_MS: 1000, LONG_SEC: 10 * 60,
+  // できあがりの形式。上から順に、このブラウザで作れるものを使う(iPhone は mp4、Android の Chrome は たいてい webm)
+  MIMES: ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4;codecs=avc1,opus', 'video/mp4',
+          'video/webm;codecs=h264,opus', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
+};
+var $ = function (id) { return document.getElementById(id); };
+var state = { mode: CONFIG.DEFAULT_MODE, file: null, meta: null, srcUrl: null, out: null, outUrl: null, job: null };
+try { var saved = localStorage.getItem(CONFIG.MODE_KEY); if (saved && CONFIG.MODES[saved]) state.mode = saved; } catch (e) {}
+
+var SUPPORTED = !!(window.MediaRecorder && window.HTMLCanvasElement && HTMLCanvasElement.prototype.captureStream && (window.AudioContext || window.webkitAudioContext));
+
+/* ---- 大きさの選択 ---- */
+var chips = Array.prototype.slice.call(document.querySelectorAll('.chip'));
+function setMode(m) {
+  state.mode = m;
+  chips.forEach(function (c) { c.classList.toggle('on', c.dataset.mode === m); });
+  try { localStorage.setItem(CONFIG.MODE_KEY, m); } catch (e) {}
+  if (state.meta) showInfo();
+}
+chips.forEach(function (c) { c.addEventListener('click', function () { if (!state.job) setMode(c.dataset.mode); c.blur(); }); });
+setMode(state.mode);
+
+/* ---- 計算(純粋な部分。ブラウザがなくても確かめられる) ---- */
+function even(n) { return Math.max(2, Math.round(n / 2) * 2); }     // 動画の大きさは偶数にする(圧縮の決まり)
+function outSize(w, h, shortSide) {                                  // 短い辺を shortSide 以下に。拡大はしない
+  var s = Math.min(1, shortSide / Math.min(w, h));
+  return { w: even(w * s), h: even(h * s), scale: s };
+}
+function bitrate(mode, w, h) {                                       // 目標より小さい絵なら、絵の大きさに応じてデータ量も減らす
+  var t = CONFIG.MODES[mode] || CONFIG.MODES.m, ref = t.short * t.short * 16 / 9;
+  return { v: Math.max(CONFIG.MIN_VBPS, Math.round(t.vbps * Math.min(1, (w * h) / ref))), a: t.abps };
+}
+function estimate(mode, w, h, sec) { var b = bitrate(mode, w, h); return (b.v + b.a) * sec / 8; }   // できあがりの重さ(バイト)の見込み
+function mb(n) { return n < 1024 * 1024 ? Math.max(1, Math.round(n / 1024)) + 'KB' : (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + 'MB'; }
+function mmss(sec) { sec = Math.max(0, Math.round(sec)); var m = Math.floor(sec / 60), s = sec % 60; return m ? m + '分' + (s ? s + '秒' : '') : s + '秒'; }
+function pickMime() {
+  for (var i = 0; i < CONFIG.MIMES.length; i++) { try { if (MediaRecorder.isTypeSupported(CONFIG.MIMES[i])) return CONFIG.MIMES[i]; } catch (e) {} }
+  return '';
+}
+function extOf(mime) { return /mp4/i.test(mime || '') ? 'mp4' : 'webm'; }
+function outName(name, ext) { return (name || 'video').replace(/\.[^.]+$/, '') + '_small.' + ext; }
+
+/* ---- 動画を読む ---- */
+function loadVideo(video, file) {
+  return new Promise(function (ok, ng) {
+    if (state.srcUrl) URL.revokeObjectURL(state.srcUrl);
+    state.srcUrl = URL.createObjectURL(file);
+    var timer = setTimeout(function () { fail(new Error('timeout')); }, 30000);
+    function cleanup() { clearTimeout(timer); video.onloadedmetadata = video.onloadeddata = video.onerror = video.ondurationchange = null; }
+    function fail(e) { cleanup(); ng(e || new Error('この動画は読めません')); }
+    function ready() {
+      if (!video.videoWidth || !video.videoHeight) return false;
+      if (!isFinite(video.duration) || video.duration <= 0) return false;
+      cleanup(); video.currentTime = 0;
+      ok({ w: video.videoWidth, h: video.videoHeight, dur: video.duration });
+      return true;
+    }
+    video.onerror = function () { fail(); };
+    video.onloadedmetadata = function () {
+      if (ready()) return;
+      if (!isFinite(video.duration)) video.currentTime = 1e101;     // 長さが分からない動画(録画したての webm など)は、終わりまで飛ばすと分かる
+      video.ondurationchange = ready; video.onloadeddata = ready;
+    };
+    video.src = state.srcUrl; video.load();
+  });
+}
+
+/* ---- 音の通り道(1回だけ作る。同じ video に2回は作れない)。スピーカーにはつながず、録画にだけ送る ---- */
+var audio = { ctx: null, src: null, dest: null };
+function audioTrack(video) {
+  var AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  if (!audio.ctx) {
+    try {
+      audio.ctx = new AC();
+      audio.src = audio.ctx.createMediaElementSource(video);
+      audio.dest = audio.ctx.createMediaStreamDestination();
+      audio.src.connect(audio.dest);
+    } catch (e) { console.error(e); audio.ctx = null; return null; }
+  }
+  if (audio.ctx.state !== 'running') audio.ctx.resume().catch(function () {});
+  return audio.dest.stream.getAudioTracks()[0] || null;
+}
+
+/* ---- 小さくする: 動画を再生しながら、小さい絵に描き直して録画する(動画と同じ時間がかかる) ---- */
+function shrinkVideo(video, meta, mode, onProgress) {
+  var t = CONFIG.MODES[mode] || CONFIG.MODES.m, dim = outSize(meta.w, meta.h, t.short), br = bitrate(mode, dim.w, dim.h);
+  var canvas = document.createElement('canvas'); canvas.width = dim.w; canvas.height = dim.h;
+  var ctx = canvas.getContext('2d', { alpha: false }); ctx.imageSmoothingQuality = 'high';
+  var stream = canvas.captureStream(CONFIG.FPS);
+  var atrack = audioTrack(video);
+  if (atrack) stream.addTrack(atrack);
+  var mime = pickMime(), opts = { videoBitsPerSecond: br.v, audioBitsPerSecond: br.a };
+  if (mime) opts.mimeType = mime;
+  var rec;
+  try { rec = new MediaRecorder(stream, opts); } catch (e) { rec = new MediaRecorder(stream); }
+  var chunks = [], done = false, cancelled = false, job = {};
+  var p = new Promise(function (ok, ng) {
+    function stop(err) {
+      if (done) return; done = true;
+      video.onended = video.onerror = null; video.pause();
+      if (err) { cancelled = true; try { if (rec.state !== 'inactive') rec.stop(); } catch (e) {} stream.getTracks().forEach(function (tr) { if (tr !== atrack) tr.stop(); }); ng(err); return; }
+      try { if (rec.state !== 'inactive') rec.stop(); else finish(); } catch (e) { finish(); }
+    }
+    function finish() {
+      stream.getTracks().forEach(function (tr) { if (tr !== atrack) tr.stop(); });
+      if (cancelled) return;
+      var blob = new Blob(chunks, { type: rec.mimeType || mime || 'video/webm' });
+      if (!blob.size) { ng(new Error('空')); return; }
+      var ext = extOf(blob.type);
+      ok({ file: new File([blob], outName(state.file && state.file.name, ext), { type: blob.type, lastModified: Date.now() }), w: dim.w, h: dim.h, ext: ext, mime: blob.type });
+    }
+    rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onerror = function (e) { stop((e && e.error) || new Error('録画に失敗')); };
+    rec.onstop = function () { if (!cancelled) finish(); };
+    var rvfc = typeof video.requestVideoFrameCallback === 'function', last = 0;
+    function draw() {
+      if (done) return;
+      try { ctx.drawImage(video, 0, 0, dim.w, dim.h); } catch (e) {}
+      var now = Date.now();
+      if (now - last > 250) { last = now; onProgress(video.currentTime, meta.dur); }
+      if (rvfc) video.requestVideoFrameCallback(draw); else requestAnimationFrame(draw);
+    }
+    video.onended = function () { onProgress(meta.dur, meta.dur); setTimeout(function () { stop(); }, 150); };   // 最後のコマまで録ってから止める
+    video.onerror = function () { stop(new Error('再生に失敗')); };
+    job.cancel = function () { var e = new Error('cancel'); e.name = 'AbortError'; stop(e); };
+    job.pause = function () { if (done) return; video.pause(); try { if (rec.state === 'recording') rec.pause(); } catch (e) {} };
+    job.resume = function () { if (done) return; try { if (rec.state === 'paused') rec.resume(); } catch (e) {} video.play().catch(function () {}); };
+    video.muted = false; video.volume = 1; video.playbackRate = 1; video.currentTime = 0;
+    rec.start(CONFIG.CHUNK_MS);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, dim.w, dim.h);
+    video.play().then(function () { draw(); }).catch(function (e) { stop(e || new Error('再生できません')); });
+  });
+  job.promise = p; job.dim = dim; job.mime = mime;
+  return job;
+}
+
+/* ---- 画面の流れ ---- */
+var wake = null;
+function keepAwake() { if (navigator.wakeLock && navigator.wakeLock.request) navigator.wakeLock.request('screen').then(function (l) { wake = l; }).catch(function () {}); }
+function letSleep() { if (wake) { wake.release().catch(function () {}); wake = null; } }
+
+function showInfo() {
+  var m = state.meta, t = CONFIG.MODES[state.mode], dim = outSize(m.w, m.h, t.short), est = estimate(state.mode, dim.w, dim.h, m.dur);
+  $('info').innerHTML = mmss(m.dur) + '・' + m.w + '×' + m.h + '・' + mb(state.file.size) + '<br>→ できあがり <b>約' + mb(est) + '</b>(' + dim.w + '×' + dim.h + ')';
+  $('btnStart').innerHTML = '小さくする<small>' + mmss(m.dur) + ' くらいかかります</small>';
+  var long = m.dur > CONFIG.LONG_SEC;
+  $('workHint').className = 'hint' + (long ? ' warn' : '');
+  $('workHint').textContent = (long ? '長い動画です。途中で失敗することがあります。短く切ってから試すと確実です。' : '')
+    + '動画と同じ時間がかかります。終わるまで この画面のままにしてください(ほかのアプリに切り替えると いったん止まります)。';
+}
+async function pickFile(file) {
+  if (!file || state.job) return;
+  clearAll();
+  state.file = file;
+  $('status').textContent = '動画を読んでいます…';
+  $('btnPick').classList.add('hidden');
+  try {
+    state.meta = await loadVideo($('src'), file);
+  } catch (e) {
+    console.error(e); state.file = null; state.meta = null;
+    $('status').textContent = 'この動画は読めませんでした。iPhone なら「設定 → カメラ → フォーマット → 互換性優先」で撮ると読めます';
+    $('btnPick').classList.remove('hidden'); return;
+  }
+  $('status').textContent = '';
+  showInfo();
+  $('work').classList.remove('hidden'); $('btnStart').classList.remove('hidden'); $('btnCancel').classList.add('hidden'); $('bar').style.display = 'none';
+  $('btnReset').classList.remove('hidden');
+}
+async function start() {
+  if (!state.meta || state.job) return;
+  var video = $('src'), t0 = Date.now();
+  chips.forEach(function (c) { c.disabled = true; });
+  $('btnStart').classList.add('hidden'); $('btnCancel').classList.remove('hidden'); $('btnReset').classList.add('hidden');
+  $('bar').style.display = 'block'; $('bar').firstChild.style.width = '0%';
+  $('workHint').className = 'hint'; $('workHint').textContent = '終わるまで この画面のままにしてください。';
+  keepAwake();
+  var job = state.job = shrinkVideo(video, state.meta, state.mode, function (cur, dur) {
+    $('bar').firstChild.style.width = Math.round(cur / dur * 100) + '%';
+    $('status').textContent = '小さくしています… ' + mmss(cur) + ' / ' + mmss(dur) + '(残り 約' + mmss(dur - cur) + ')';
+  });
+  try {
+    var r = await job.promise;
+    state.out = r; showResult(t0);
+  } catch (e) {
+    console.error(e);
+    $('status').textContent = e && e.name === 'AbortError' ? 'やめました' : 'うまくいきませんでした。もう一度ためしてください(' + (e && e.message || e) + ')';
+    $('btnStart').classList.remove('hidden');
+  } finally {
+    state.job = null; letSleep(); chips.forEach(function (c) { c.disabled = false; });
+    $('btnCancel').classList.add('hidden'); $('bar').style.display = 'none'; $('btnReset').classList.remove('hidden');
+  }
+}
+function showResult(t0) {
+  var r = state.out, before = state.file.size, after = r.file.size;
+  $('work').classList.add('hidden'); $('status').textContent = '';
+  $('summary').innerHTML = 'できました<br>' + mb(before) + ' → <span style="color:#8df0b2">' + mb(after) + '</span>' +
+    '<small>' + (before > after ? Math.round((1 - after / before) * 100) + '% 小さくなりました' : 'もとの動画より大きくなりました') + '(' + r.w + '×' + r.h + '・' + r.ext + ')</small>';
+  if (state.outUrl) URL.revokeObjectURL(state.outUrl);
+  state.outUrl = URL.createObjectURL(r.file);
+  $('out').src = state.outUrl;
+  var canShare = !!(navigator.canShare && navigator.canShare({ files: [r.file] }));
+  $('btnShare').classList.toggle('hidden', !canShare);
+  $('shareHint').textContent = (canShare ? '「LINEなどで送る」を押すと、送り先を選ぶ画面が出ます。LINE を選ぶと小さくした動画がそのまま送れます。'
+    : 'このブラウザでは「送る」ボタンが使えません。「保存する」してから、LINE で動画を選んで送ってください。')
+    + (r.ext === 'webm' ? ' このブラウザでは webm という形式になります。LINE で送れないときは、保存してから LINE で選んでください。' : '');
+  $('result').classList.remove('hidden'); $('btnReset').classList.remove('hidden');
+  console.log('done', Math.round((Date.now() - t0) / 1000) + 's', before, '->', after, r.mime);
+}
+function clearAll() {
+  if (state.job) state.job.cancel();
+  if (state.srcUrl) { URL.revokeObjectURL(state.srcUrl); state.srcUrl = null; }
+  if (state.outUrl) { URL.revokeObjectURL(state.outUrl); state.outUrl = null; }
+  $('src').removeAttribute('src'); $('out').removeAttribute('src');
+  state.file = null; state.meta = null; state.out = null;
+  $('work').classList.add('hidden'); $('result').classList.add('hidden'); $('btnReset').classList.add('hidden'); $('status').textContent = '';
+}
+
+$('file').addEventListener('change', function (ev) {
+  var f = ev.target.files && ev.target.files[0];
+  ev.target.value = '';
+  pickFile(f).catch(function (e) { console.error(e); $('status').textContent = 'うまくいきませんでした。もう一度ためしてください'; $('btnPick').classList.remove('hidden'); });
+});
+$('btnStart').addEventListener('click', function () { this.blur(); start(); });
+$('btnCancel').addEventListener('click', function () { this.blur(); if (state.job) state.job.cancel(); });
+$('btnShare').addEventListener('click', function () {
+  this.blur();
+  navigator.share({ files: [state.out.file], title: '動画' }).catch(function (e) { if (e && e.name !== 'AbortError') { console.error(e); $('status').textContent = '送れませんでした。「保存する」をためしてください'; } });
+});
+$('btnSave').addEventListener('click', function () {
+  this.blur();
+  var a = document.createElement('a'); a.href = state.outUrl; a.download = state.out.file.name; document.body.appendChild(a); a.click(); a.remove();
+});
+$('btnReset').addEventListener('click', function () { this.blur(); clearAll(); $('btnPick').classList.remove('hidden'); });
+// ほかのアプリに切り替えたら いったん止め、戻ったら続ける(切り替え中は絵が止まってしまうので)
+document.addEventListener('visibilitychange', function () { if (!state.job) return; if (document.hidden) state.job.pause(); else state.job.resume(); });
+
+if (!SUPPORTED) {
+  $('btnPick').classList.add('hidden');
+  $('status').textContent = 'このブラウザでは動画を小さくできません。iPhone は Safari、Android は Chrome で開いてください。';
+}
+
+/* 確認用: アドレスの末尾に #play(または #demo)をつけると、その場で作った3秒の動画で ためしに動かす(スクショ・自動確認で使う) */
+if (SUPPORTED && (location.hash === '#play' || location.hash === '#demo')) {
+  (function () {
+    var c = document.createElement('canvas'); c.width = 1280; c.height = 720; var x = c.getContext('2d');
+    var st = c.captureStream(30), rec = new MediaRecorder(st), chunks = [], f = 0;
+    rec.ondataavailable = function (e) { if (e.data.size) chunks.push(e.data); };
+    rec.onstop = function () {
+      var b = new Blob(chunks, { type: rec.mimeType }), file = new File([b], 'test.' + extOf(rec.mimeType), { type: rec.mimeType });
+      window.__demoDone = false;
+      pickFile(file).then(function () { return start(); }).then(function () { window.__demoDone = true; }).catch(function (e) { console.error(e); });
+    };
+    var tm = setInterval(function () {
+      f++; x.fillStyle = 'hsl(' + (f * 4 % 360) + ',70%,40%)'; x.fillRect(0, 0, c.width, c.height);
+      x.fillStyle = '#fff'; x.font = 'bold 200px sans-serif'; x.fillText('TEST ' + f, 100 + (f % 60) * 5, 420);
+      if (f >= 90) { clearInterval(tm); rec.stop(); }
+    }, 33);
+    rec.start(200);
+  })();
+}
+
+// LINE の中で開いたときだけ、1回だけ案内する(LINE の中は「送る」ボタンが使えないことがあり、ホーム画面にも入れられない)
+(function () {
+  var seenKey = 'dogaresize-line-tip', seen = false;
+  try { seen = localStorage.getItem(seenKey) === '1'; } catch (e) {}
+  var standalone = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+  if (!/\bLine\//i.test(navigator.userAgent) || standalone || seen) return;
+  var bar = document.createElement('div');
+  bar.style.cssText = 'position:fixed;left:8px;right:8px;bottom:calc(8px + env(safe-area-inset-bottom,0px));z-index:99999;background:#fffaf0;color:#1b1430;border:3px solid #1b1430;border-radius:14px;padding:10px 40px 10px 12px;font:700 15px/1.5 system-ui,sans-serif';
+  bar.textContent = 'LINEの中だと うまく動かないことがあります。右下の「…」(または右上の︙)から「ブラウザで開く」を選ぶと、ちゃんと使えて、ホーム画面にも入れられます。';
+  var x = document.createElement('button'); x.type = 'button'; x.setAttribute('aria-label', 'とじる'); x.textContent = '×';
+  x.style.cssText = 'position:absolute;top:4px;right:6px;width:32px;height:32px;border:0;background:none;font:900 20px/1 system-ui;color:#1b1430;cursor:pointer';
+  x.addEventListener('click', function () { try { localStorage.setItem(seenKey, '1'); } catch (e) {} bar.remove(); });
+  bar.appendChild(x); addEventListener('load', function () { document.body.appendChild(bar); });
+})();
+
+// Android の Chrome: ページの中から「ホーム画面に入れる」(入れられる状態になると Chrome が beforeinstallprompt を出す)
+(function () {
+  var deferred = null, box = $('installBox'), btn = $('btnInstall'), hint = $('installHint');
+  var standalone = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+  if (standalone) return;
+  addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); deferred = e; box.classList.remove('hidden'); });
+  btn.addEventListener('click', function () {
+    btn.blur();
+    if (!deferred) return;
+    deferred.prompt();
+    deferred.userChoice.then(function (r) {
+      deferred = null;
+      if (r && r.outcome === 'accepted') { btn.classList.add('hidden'); hint.textContent = '入れました。ホーム画面か、アプリ一覧(下から上にスワイプ)に「動画リサイズ」があります。'; }
+    }).catch(function () {});
+  });
+  addEventListener('appinstalled', function () { btn.classList.add('hidden'); hint.textContent = '入れました。ホーム画面か、アプリ一覧(下から上にスワイプ)に「動画リサイズ」があります。'; box.classList.remove('hidden'); });
+  // iPhone の Safari には この仕組みがないので、手順を出す
+  var ios = /iPhone|iPad|iPod/.test(navigator.userAgent) && !/\bLine\//i.test(navigator.userAgent);
+  if (ios) { btn.classList.add('hidden'); hint.textContent = 'ホーム画面に入れる: 下の 共有ボタン(四角に↑)→「ホーム画面に追加」。'; box.classList.remove('hidden'); }
+})();
+
+// ホーム画面に入れられる(アプリのように開く)ための登録。file:// や 登録できない所では 何もしない
+if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+  addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () {}); });
+}
+</script>
+</body>
+</html>

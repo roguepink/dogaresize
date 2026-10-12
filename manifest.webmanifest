@@ -1,0 +1,18 @@
+{
+  "name": "動画リサイズ",
+  "short_name": "動画リサイズ",
+  "description": "動画をえらぶだけで、ぐっと小さくします。LINEやメールで送りやすく。動画はスマホの中だけで処理します。",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "id": "./?app=dogaresize-1",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#140c2a",
+  "theme_color": "#140c2a",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
