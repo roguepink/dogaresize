@@ -81,6 +81,7 @@
   <div class="bar" id="bar"><i></i></div>
   <button type="button" class="big" id="btnStart">小さくする</button>
   <p class="hint" id="workHint"></p>
+  <button type="button" class="big green hidden" id="btnResume">▶ つづきから</button>
   <button type="button" class="big sub hidden" id="btnCancel">やめる</button>
 </div>
 
@@ -241,8 +242,22 @@ function shrinkVideo(video, meta, mode, bytes, onProgress) {
     video.onended = function () { onProgress(meta.dur, meta.dur); setTimeout(function () { stop(); }, 150); };   // 最後のコマまで録ってから止める
     video.onerror = function () { stop(new Error('再生に失敗')); };
     job.cancel = function () { var e = new Error('cancel'); e.name = 'AbortError'; stop(e); };
-    job.pause = function () { if (done) return; video.pause(); try { if (rec.state === 'recording') rec.pause(); } catch (e) {} };
-    job.resume = function () { if (done) return; try { if (rec.state === 'paused') rec.resume(); } catch (e) {} video.play().catch(function () {}); };
+    /* いったん止める / つづきから。止まっている間は録画も止める(止まった絵や無音が入らないように)。
+       再開の再生は iPhone だと「人のタップ」がないと拒否されることがあるので、だめなら「つづきから」ボタンを出す */
+    var pausing = false;
+    job.pause = function () {
+      if (done || pausing) return; pausing = true;
+      video.pause(); try { if (rec.state === 'recording') rec.pause(); } catch (e) {}
+      if (job.onpause) job.onpause();
+    };
+    job.resume = function () {
+      if (done || !pausing) return Promise.resolve();
+      return video.play().then(function () {
+        pausing = false; try { if (rec.state === 'paused') rec.resume(); } catch (e) {}
+        if (job.onresume) job.onresume();
+      }).catch(function (e) { console.warn('resume', e); if (job.onpause) job.onpause(); throw e; });
+    };
+    video.onpause = function () { if (!done && !pausing && !video.ended) job.pause(); };   // こちらが止めたのではなく、スマホの都合で止まったとき(画面ロックなど)
     video.muted = false; video.volume = 1; video.playbackRate = 1; video.currentTime = 0;
     rec.start(CONFIG.CHUNK_MS);
     ctx.fillStyle = '#000'; ctx.fillRect(0, 0, dim.w, dim.h);
@@ -265,7 +280,7 @@ function showInfo() {
   var long = m.dur > CONFIG.LONG_SEC;
   $('workHint').className = 'hint' + (long ? ' warn' : '');
   $('workHint').textContent = (long ? '長い動画です。途中で失敗することがあります。短く切ってから試すと確実です。' : '')
-    + '動画と同じ時間がかかります。終わるまで この画面のままにしてください(ほかのアプリに切り替えると いったん止まります)。';
+    + '動画と同じ時間がかかります。終わるまで この画面のままにしてください。画面が消えたり ほかのアプリに切り替えたりすると いったん止まり、戻って「つづきから」を押すと続きます。';
 }
 async function pickFile(file) {
   if (!file || state.job) return;
@@ -293,10 +308,14 @@ async function start() {
   $('bar').style.display = 'block'; $('bar').firstChild.style.width = '0%';
   $('workHint').className = 'hint'; $('workHint').textContent = '終わるまで この画面のままにしてください。';
   keepAwake();
+  var paused = false;
   var job = state.job = shrinkVideo(video, state.meta, state.mode, state.file.size, function (cur, dur) {
+    if (paused) return;
     $('bar').firstChild.style.width = Math.round(cur / dur * 100) + '%';
     $('status').textContent = '小さくしています… ' + mmss(cur) + ' / ' + mmss(dur) + '(残り 約' + mmss(dur - cur) + ')';
   });
+  job.onpause = function () { paused = true; $('status').textContent = 'いったん止まっています。「つづきから」を押してください'; $('btnResume').classList.remove('hidden'); };
+  job.onresume = function () { paused = false; $('status').textContent = '小さくしています…'; $('btnResume').classList.add('hidden'); };
   try {
     var r = await job.promise;
     state.out = r; showResult(t0);
@@ -306,7 +325,7 @@ async function start() {
     $('btnStart').classList.remove('hidden');
   } finally {
     state.job = null; letSleep(); chips.forEach(function (c) { c.disabled = false; });
-    $('btnCancel').classList.add('hidden'); $('bar').style.display = 'none'; $('btnReset').classList.remove('hidden');
+    $('btnCancel').classList.add('hidden'); $('btnResume').classList.add('hidden'); $('bar').style.display = 'none'; $('btnReset').classList.remove('hidden');
   }
 }
 function showResult(t0) {
@@ -341,6 +360,7 @@ $('file').addEventListener('change', function (ev) {
 });
 $('btnStart').addEventListener('click', function () { this.blur(); start(); });
 $('btnCancel').addEventListener('click', function () { this.blur(); if (state.job) state.job.cancel(); });
+$('btnResume').addEventListener('click', function () { this.blur(); if (state.job) state.job.resume().catch(function () {}); });
 $('btnShare').addEventListener('click', function () {
   this.blur();
   navigator.share({ files: [state.out.file], title: '動画' }).catch(function (e) { if (e && e.name !== 'AbortError') { console.error(e); $('status').textContent = '送れませんでした。「保存する」をためしてください'; } });
@@ -351,7 +371,8 @@ $('btnSave').addEventListener('click', function () {
 });
 $('btnReset').addEventListener('click', function () { this.blur(); clearAll(); $('btnPick').classList.remove('hidden'); });
 // ほかのアプリに切り替えたら いったん止め、戻ったら続ける(切り替え中は絵が止まってしまうので)
-document.addEventListener('visibilitychange', function () { if (!state.job) return; if (document.hidden) state.job.pause(); else state.job.resume(); });
+// ほかのアプリに切り替えたり画面が消えたりしたら いったん止め、戻ったら続ける(自動で続けられなければ「つづきから」ボタン)
+document.addEventListener('visibilitychange', function () { if (!state.job) return; if (document.hidden) state.job.pause(); else state.job.resume().catch(function () {}); });
 
 if (!SUPPORTED) {
   $('btnPick').classList.add('hidden');
