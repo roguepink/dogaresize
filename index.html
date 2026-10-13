@@ -157,6 +157,7 @@ function pickMime() {                      // 一度失敗した形式(state.bad
   return '';
 }
 function extOf(mime) { return /mp4/i.test(mime || '') ? 'mp4' : 'webm'; }
+function readBuf(blob) { return new Promise(function (ok, ng) { var r = new FileReader(); r.onload = function () { ok(r.result); }; r.onerror = function () { ng(r.error); }; r.readAsArrayBuffer(blob); }); }
 function outName(name, ext) { return (name || 'video').replace(/\.[^.]+$/, '') + '_small.' + ext; }
 
 /* ---- 動画を読む ---- */
@@ -227,7 +228,12 @@ function shrinkVideo(video, meta, mode, bytes, onProgress) {
       var blob = new Blob(chunks, { type: rec.mimeType || mime || 'video/webm' });
       if (!blob.size) { ng(new Error('空')); return; }
       var ext = extOf(blob.type), plain = (blob.type || '').split(';')[0] || (ext === 'mp4' ? 'video/mp4' : 'video/webm');   // 「;codecs=…」を外す(ついたままだと Android の「送る」が受け付けない)
-      ok({ file: new File([blob], outName(state.file && state.file.name, ext), { type: plain, lastModified: Date.now() }), w: dim.w, h: dim.h, ext: ext, mime: blob.type });
+      function deliver(b, fixed) { ok({ file: new File([b], outName(state.file && state.file.name, ext), { type: plain, lastModified: Date.now() }), w: dim.w, h: dim.h, ext: ext, mime: blob.type, fixed: fixed }); }
+      readBuf(blob).then(function (buf) {            // ふつうの作りに組み直す(できなければ そのまま)
+        var fixed = null;
+        try { fixed = ext === 'mp4' ? remuxMp4(buf) : fixWebmDuration(buf, meta.dur); } catch (e) { console.warn('remux', e); }
+        deliver(fixed ? new Blob([fixed], { type: plain }) : blob, !!fixed);
+      }).catch(function (e) { console.warn('readBuf', e); deliver(blob, false); });
     }
     rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
     rec.onerror = function (e) { var err = (e && e.error) || new Error('録画に失敗'); try { err.kind = 'rec'; err.mime = mime; } catch (x) {} stop(err); };
@@ -266,6 +272,177 @@ function shrinkVideo(video, meta, mode, bytes, onProgress) {
   });
   job.promise = p; job.dim = dim; job.mime = mime;
   return job;
+}
+
+/* ---- できあがりの動画を「ふつうの作り」に組み直す ----
+   ブラウザ(MediaRecorder)が作る mp4 は、細切れ(fragmented: moof+mdat の繰り返し)の特殊な作りで、長さの情報も入っていない。
+   Mac や iPhone は読めるが、Android や LINE は最初の切れ端しか読めず「数秒で止まる」ことがある(ノブさんの Android で 2026-10-13)。
+   そこで、全コマの表(stbl)を持つ ふつうの mp4(ftyp + moov + mdat)に組み直す。読めない作りのときは null を返し、元のまま使う。 */
+function remuxMp4(buf) {
+  var u8 = new Uint8Array(buf), dv = new DataView(buf), N = u8.length;
+  function str(o) { return String.fromCharCode(u8[o], u8[o + 1], u8[o + 2], u8[o + 3]); }
+  function u32(o) { return dv.getUint32(o); }
+  function boxes(s, e) {                            // s〜e の中にある箱の一覧 [{t, s, e, p}](p = 中身の始まり)
+    var out = [];
+    while (s + 8 <= e) {
+      var sz = u32(s), t = str(s + 4), hdr = 8;
+      if (sz === 1) { sz = dv.getUint32(s + 8) * 4294967296 + dv.getUint32(s + 12); hdr = 16; }
+      else if (sz === 0) sz = e - s;
+      if (sz < hdr || s + sz > e) return null;
+      out.push({ t: t, s: s, e: s + sz, p: s + hdr }); s += sz;
+    }
+    return out;
+  }
+  function find(list, t) { for (var i = 0; list && i < list.length; i++) if (list[i].t === t) return list[i]; return null; }
+  var top = boxes(0, N); if (!top) return null;
+  var moov = find(top, 'moov'); if (!moov || !find(top, 'moof')) return null;     // 細切れでなければ そのまま
+  var mc = boxes(moov.p, moov.e); if (!mc) return null;
+  var mvhd = find(mc, 'mvhd'); if (!mvhd) return null;
+  var mvVer = u8[mvhd.p], mvTs = mvVer === 1 ? u32(mvhd.p + 20) : u32(mvhd.p + 12);
+  // trex(各トラックの既定値)
+  var trex = {}, mvex = find(mc, 'mvex');
+  if (mvex) boxes(mvex.p, mvex.e).forEach(function (b) { if (b.t === 'trex') trex[u32(b.p + 4)] = { dur: u32(b.p + 12), size: u32(b.p + 16), flags: u32(b.p + 20) }; });
+  // トラックの情報
+  var tracks = {}, order = [];
+  for (var i = 0; i < mc.length; i++) {
+    if (mc[i].t !== 'trak') continue;
+    var tc = boxes(mc[i].p, mc[i].e), tkhd = find(tc, 'tkhd'), mdia = find(tc, 'mdia'); if (!tkhd || !mdia) return null;
+    var tv = u8[tkhd.p], id = tv === 1 ? u32(tkhd.p + 20) : u32(tkhd.p + 12);
+    var mdc = boxes(mdia.p, mdia.e), mdhd = find(mdc, 'mdhd'), hdlr = find(mdc, 'hdlr'), minf = find(mdc, 'minf'); if (!mdhd || !hdlr || !minf) return null;
+    var mv = u8[mdhd.p], ts = mv === 1 ? u32(mdhd.p + 20) : u32(mdhd.p + 12);
+    var mic = boxes(minf.p, minf.e), stbl = find(mic, 'stbl'); if (!stbl) return null;
+    var stsd = find(boxes(stbl.p, stbl.e), 'stsd'); if (!stsd) return null;
+    tracks[id] = { id: id, trak: mc[i], tc: tc, tkhd: tkhd, mdia: mdia, mdc: mdc, mdhd: mdhd, minf: minf, mic: mic, stsd: stsd, ts: ts, samples: [] };
+    order.push(id);
+  }
+  // 細切れ(moof)から コマの一覧を集める
+  for (i = 0; i < top.length; i++) {
+    if (top[i].t !== 'moof') continue;
+    var moof = top[i], fc = boxes(moof.p, moof.e); if (!fc) return null;
+    for (var j = 0; j < fc.length; j++) {
+      if (fc[j].t !== 'traf') continue;
+      var trc = boxes(fc[j].p, fc[j].e), tfhd = find(trc, 'tfhd'); if (!tfhd) return null;
+      var tf = u32(tfhd.p) & 0xffffff, tid = u32(tfhd.p + 4), o = tfhd.p + 8, tr = tracks[tid]; if (!tr) return null;
+      var base = moof.s, dflt = trex[tid] || { dur: 0, size: 0, flags: 0 }, d = { dur: dflt.dur, size: dflt.size, flags: dflt.flags };
+      if (tf & 1) { base = u32(o) * 4294967296 + u32(o + 4); o += 8; }
+      if (tf & 2) o += 4;
+      if (tf & 8) { d.dur = u32(o); o += 4; }
+      if (tf & 0x10) { d.size = u32(o); o += 4; }
+      if (tf & 0x20) { d.flags = u32(o); o += 4; }
+      for (var k = 0; k < trc.length; k++) {
+        if (trc[k].t !== 'trun') continue;
+        var tv2 = u8[trc[k].p], fl = u32(trc[k].p) & 0xffffff, cnt = u32(trc[k].p + 4), q = trc[k].p + 8, off = base, first = null;
+        if (fl & 1) { off += dv.getInt32(q); q += 4; }
+        if (fl & 4) { first = u32(q); q += 4; }
+        for (var n = 0; n < cnt; n++) {
+          var sm = { dur: d.dur, size: d.size, flags: (n === 0 && first !== null) ? first : d.flags, cts: 0 };
+          if (fl & 0x100) { sm.dur = u32(q); q += 4; }
+          if (fl & 0x200) { sm.size = u32(q); q += 4; }
+          if (fl & 0x400) { sm.flags = u32(q); q += 4; }
+          if (fl & 0x800) { sm.cts = tv2 === 0 ? u32(q) : dv.getInt32(q); q += 4; }
+          if (off + sm.size > N) return null;
+          sm.off = off; off += sm.size; tr.samples.push(sm);
+        }
+      }
+    }
+  }
+  // 箱を作る道具
+  function be32(v) { return [(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255]; }
+  function box(t, parts) {
+    var len = 8; parts.forEach(function (p) { len += p.length; });
+    var out = new Uint8Array(len), o = 4; out.set(be32(len), 0);
+    out[4] = t.charCodeAt(0); out[5] = t.charCodeAt(1); out[6] = t.charCodeAt(2); out[7] = t.charCodeAt(3); o = 8;
+    parts.forEach(function (p) { out.set(p, o); o += p.length; }); return out;
+  }
+  function full(t, ver, flags, words) {              // words: 32ビットの数の配列
+    var out = new Uint8Array(4 + words.length * 4); out[0] = ver; out[1] = (flags >> 16) & 255; out[2] = (flags >> 8) & 255; out[3] = flags & 255;
+    for (var i = 0; i < words.length; i++) out.set(be32(words[i]), 4 + i * 4);
+    return box(t, [out]);
+  }
+  function raw(b) { return u8.subarray(b.s, b.e); }
+  function patched(b, offset, bytes, value) {        // 箱をコピーして、offset(中身からの位置)の長さの欄を value にする
+    var c = new Uint8Array(raw(b)), v = new DataView(c.buffer, c.byteOffset, c.length), o = (b.p - b.s) + offset;
+    if (bytes === 8) { v.setUint32(o, Math.floor(value / 4294967296)); v.setUint32(o + 4, value >>> 0); } else v.setUint32(o, Math.min(value, 0xffffffff));
+    return c;
+  }
+  // 各トラックの表(stbl)と長さ
+  var total = 0, mvDur = 0, traks = [], chunks = [];
+  order.forEach(function (id) {
+    var tr = tracks[id], S = tr.samples; if (!S.length) return;
+    var dur = 0; S.forEach(function (s) { dur += s.dur; }); tr.dur = dur;
+    mvDur = Math.max(mvDur, Math.round(dur * mvTs / tr.ts));
+    S.forEach(function (s) { s.newOff = total; total += s.size; chunks.push(s); });
+  });
+  if (!chunks.length) return null;
+  var ftyp = box('ftyp', [new Uint8Array([105, 115, 111, 109, 0, 0, 2, 0, 105, 115, 111, 109, 105, 115, 111, 50, 97, 118, 99, 49, 109, 112, 52, 49])]);  // isom, isom iso2 avc1 mp41
+  function buildMoov(dataStart) {
+    var parts = [patched(mvhd, mvVer === 1 ? 24 : 16, mvVer === 1 ? 8 : 4, mvDur)];
+    order.forEach(function (id) {
+      var tr = tracks[id], S = tr.samples; if (!S.length) return;
+      var tv = u8[tr.tkhd.p], mv = u8[tr.mdhd.p];
+      // stts(長さの並び)
+      var stts = [], last = -1; S.forEach(function (s) { if (s.dur === last) stts[stts.length - 1]++; else { stts.push(s.dur, 1); last = s.dur; } });
+      var sttsW = [stts.length / 2]; for (var i = 0; i < stts.length; i += 2) sttsW.push(stts[i + 1], stts[i]);   // (個数, 長さ) の順
+      // ctts(表示順のずれ)が必要なときだけ
+      var hasCts = false, neg = false; S.forEach(function (s) { if (s.cts) hasCts = true; if (s.cts < 0) neg = true; });
+      var ctts = null;
+      if (hasCts) { var cw = [], lc = null; S.forEach(function (s) { if (lc !== null && s.cts === lc) cw[cw.length - 2]++; else { cw.push(1, s.cts >>> 0); lc = s.cts; } }); ctts = full('ctts', neg ? 1 : 0, 0, [cw.length / 2].concat(cw)); }
+      // stss(先頭から再生できるコマ)。全部そうなら 省く
+      var sync = []; S.forEach(function (s, i) { if (!((s.flags >>> 16) & 1)) sync.push(i + 1); });
+      var stss = sync.length === S.length ? null : full('stss', 0, 0, [sync.length].concat(sync));
+      var stsc = full('stsc', 0, 0, [1, 1, 1, 1]);                                   // 1コマ = 1かたまり
+      var stsz = full('stsz', 0, 0, [0, S.length].concat(S.map(function (s) { return s.size; })));
+      var offs = S.map(function (s) { return dataStart + s.newOff; }), big = offs[offs.length - 1] > 0xffffffff;
+      var stco = big ? full('co64', 0, 0, [S.length].concat([].concat.apply([], offs.map(function (o) { return [Math.floor(o / 4294967296), o >>> 0]; }))))
+                     : full('stco', 0, 0, [S.length].concat(offs));
+      var stblParts = [raw(tr.stsd), full('stts', 0, 0, sttsW)]; if (ctts) stblParts.push(ctts); if (stss) stblParts.push(stss); stblParts.push(stsc, stsz, stco);
+      var minfParts = []; tr.mic.forEach(function (b) { minfParts.push(b.t === 'stbl' ? box('stbl', stblParts) : raw(b)); });
+      var mdiaParts = []; tr.mdc.forEach(function (b) { mdiaParts.push(b.t === 'mdhd' ? patched(b, mv === 1 ? 24 : 16, mv === 1 ? 8 : 4, tr.dur) : b.t === 'minf' ? box('minf', minfParts) : raw(b)); });
+      var trakParts = []; tr.tc.forEach(function (b) { trakParts.push(b.t === 'tkhd' ? patched(b, tv === 1 ? 28 : 20, tv === 1 ? 8 : 4, Math.round(tr.dur * mvTs / tr.ts)) : b.t === 'mdia' ? box('mdia', mdiaParts) : raw(b)); });
+      parts.push(box('trak', trakParts));
+    });
+    return box('moov', parts);
+  }
+  var moovA = buildMoov(0), dataStart = ftyp.length + moovA.length + 8, moovB = buildMoov(dataStart);
+  if (moovB.length !== moovA.length) return null;
+  var out = new Uint8Array(dataStart + total); out.set(ftyp, 0); out.set(moovB, ftyp.length);
+  out.set(be32(8 + total), dataStart - 8); out.set([109, 100, 97, 116], dataStart - 4);   // mdat
+  chunks.forEach(function (s) { out.set(u8.subarray(s.off, s.off + s.size), dataStart + s.newOff); });
+  return out.buffer;
+}
+
+/* webm(Android の Chrome がこれを作ることがある)は「長さ」(Duration)が入っていないので、書き足す。sec = 動画の長さ(秒) */
+function fixWebmDuration(buf, sec) {
+  var u8 = new Uint8Array(buf), N = u8.length;
+  function vint(o, strip) {                          // EBML の 可変長の数。戻り値 { v, len }。長さ不明(全部1)は -1
+    var b = u8[o], len = 1, mask = 0x80; while (len <= 8 && !(b & mask)) { len++; mask >>= 1; }
+    if (len > 8 || o + len > N) return null;
+    var v = strip ? (b & (mask - 1)) : b, all1 = strip && (b & (mask - 1)) === mask - 1;
+    for (var i = 1; i < len; i++) { v = v * 256 + u8[o + i]; if (u8[o + i] !== 255) all1 = false; }
+    return { v: all1 ? -1 : v, len: len };
+  }
+  function elem(o) { var id = vint(o, false); if (!id) return null; var sz = vint(o + id.len, true); if (!sz) return null; return { id: id.v, s: o, p: o + id.len + sz.len, size: sz.v, idLen: id.len, szLen: sz.len }; }
+  var o = 0, seg = null;
+  while (o < N) { var e = elem(o); if (!e) return null; if (e.id === 0x18538067) { seg = e; break; } if (e.size < 0) return null; o = e.p + e.size; }
+  if (!seg) return null;
+  o = seg.p; var info = null, end = seg.size < 0 ? N : seg.p + seg.size;
+  while (o < end) { e = elem(o); if (!e || e.size < 0) return null; if (e.id === 0x1549A966) { info = e; break; } o = e.p + e.size; }
+  if (!info) return null;
+  var scale = 1000000, durEl = null; o = info.p;
+  while (o < info.p + info.size) { e = elem(o); if (!e || e.size < 0) return null; if (e.id === 0x2AD7B1) { scale = 0; for (var i = 0; i < e.size; i++) scale = scale * 256 + u8[e.p + i]; } if (e.id === 0x4489) durEl = e; o = e.p + e.size; }
+  var value = sec * 1e9 / scale, out, dv;
+  if (durEl && durEl.size === 8) { out = new Uint8Array(buf.slice(0)); new DataView(out.buffer).setFloat64(durEl.p, value); return out.buffer; }
+  if (durEl && durEl.size === 4) { out = new Uint8Array(buf.slice(0)); new DataView(out.buffer).setFloat32(durEl.p, value); return out.buffer; }
+  if (durEl || info.size > 0x3fff - 11) return null;
+  var add = new Uint8Array(11); add[0] = 0x44; add[1] = 0x89; add[2] = 0x88; new DataView(add.buffer).setFloat64(3, value);
+  var newSize = info.size + 11, hdr = new Uint8Array(info.idLen + 2); hdr.set(u8.subarray(info.s, info.s + info.idLen), 0);
+  hdr[info.idLen] = 0x40 | (newSize >> 8); hdr[info.idLen + 1] = newSize & 255;        // 長さは 2バイトで書き直す
+  out = new Uint8Array(N - info.szLen + 2 + 11); o = 0;
+  out.set(u8.subarray(0, info.s), o); o += info.s; out.set(hdr, o); o += hdr.length;
+  out.set(u8.subarray(info.p, info.p + info.size), o); o += info.size; out.set(add, o); o += 11;
+  out.set(u8.subarray(info.p + info.size), o);
+  if (seg.size >= 0) { var sv = new DataView(out.buffer); var segSz = seg.size + (2 - info.szLen) + 11; if (seg.szLen === 8) { sv.setUint32(seg.s + seg.idLen, 0x01000000 | Math.floor(segSz / 4294967296)); sv.setUint32(seg.s + seg.idLen + 4, segSz >>> 0); } else return null; }
+  return out.buffer;
 }
 
 /* ---- 画面の流れ ---- */
@@ -350,7 +527,7 @@ function showResult(t0) {
   var r = state.out, before = state.file.size, after = r.file.size;
   $('work').classList.add('hidden'); $('status').textContent = ''; state.tries = 0;
   $('summary').innerHTML = 'できました<br>' + mb(before) + ' → <span style="color:#8df0b2">' + mb(after) + '</span>' +
-    '<small>' + (before > after ? Math.round((1 - after / before) * 100) + '% 小さくなりました' : 'もとの動画より大きくなりました') + '(' + r.w + '×' + r.h + '・' + r.ext + ')</small>';
+    '<small>' + (before > after ? Math.round((1 - after / before) * 100) + '% 小さくなりました' : 'もとの動画より大きくなりました') + '(' + r.w + '×' + r.h + '・' + r.ext + (r.fixed ? '' : '・未整形') + ')</small>';
   if (state.outUrl) URL.revokeObjectURL(state.outUrl);
   state.outUrl = URL.createObjectURL(r.file);
   $('out').src = state.outUrl;
@@ -363,7 +540,7 @@ function showResult(t0) {
     : '「LINEなどで送る」を押すと、送り先を選ぶ画面が出ます。LINE を選ぶと小さくした動画がそのまま送れます。')
     + (r.ext === 'webm' ? ' このブラウザでは webm という形式になります。LINE で送れないときは、保存してから LINE で選んでください。' : '');
   $('result').classList.remove('hidden'); $('btnReset').classList.remove('hidden');
-  console.log('done', Math.round((Date.now() - t0) / 1000) + 's', before, '->', after, r.mime);
+  console.log('done', Math.round((Date.now() - t0) / 1000) + 's', before, '->', after, r.mime, r.fixed ? 'remuxed' : 'raw');
 }
 function clearAll() {
   if (state.job) state.job.cancel();
