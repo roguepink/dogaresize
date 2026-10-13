@@ -226,8 +226,8 @@ function shrinkVideo(video, meta, mode, bytes, onProgress) {
       if (cancelled) return;
       var blob = new Blob(chunks, { type: rec.mimeType || mime || 'video/webm' });
       if (!blob.size) { ng(new Error('空')); return; }
-      var ext = extOf(blob.type);
-      ok({ file: new File([blob], outName(state.file && state.file.name, ext), { type: blob.type, lastModified: Date.now() }), w: dim.w, h: dim.h, ext: ext, mime: blob.type });
+      var ext = extOf(blob.type), plain = (blob.type || '').split(';')[0] || (ext === 'mp4' ? 'video/mp4' : 'video/webm');   // 「;codecs=…」を外す(ついたままだと Android の「送る」が受け付けない)
+      ok({ file: new File([blob], outName(state.file && state.file.name, ext), { type: plain, lastModified: Date.now() }), w: dim.w, h: dim.h, ext: ext, mime: blob.type });
     }
     rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
     rec.onerror = function (e) { var err = (e && e.error) || new Error('録画に失敗'); try { err.kind = 'rec'; err.mime = mime; } catch (x) {} stop(err); };
@@ -354,10 +354,13 @@ function showResult(t0) {
   if (state.outUrl) URL.revokeObjectURL(state.outUrl);
   state.outUrl = URL.createObjectURL(r.file);
   $('out').src = state.outUrl;
-  var canShare = !!(navigator.canShare && navigator.canShare({ files: [r.file] }));
+  var canShare = false;
+  try { canShare = !!(navigator.canShare && navigator.canShare({ files: [r.file] })); } catch (e) { canShare = false; }
+  var big = after > 45 * 1024 * 1024;                     // Android の Chrome は 50MB くらいまでしか「送る」に渡せない
   $('btnShare').classList.toggle('hidden', !canShare);
-  $('shareHint').textContent = (canShare ? '「LINEなどで送る」を押すと、送り先を選ぶ画面が出ます。LINE を選ぶと小さくした動画がそのまま送れます。'
-    : 'このブラウザでは「送る」ボタンが使えません。「保存する」してから、LINE で動画を選んで送ってください。')
+  $('shareHint').textContent = (!canShare ? 'このブラウザでは「送る」ボタンが使えません。「保存する」してから、LINE で動画を選んで送ってください。'
+    : big ? 'できあがりが大きいので、「送る」が失敗することがあります。だめなら「保存する」してから LINE で動画を選ぶか、「10%」でもう一度作ってください。'
+    : '「LINEなどで送る」を押すと、送り先を選ぶ画面が出ます。LINE を選ぶと小さくした動画がそのまま送れます。')
     + (r.ext === 'webm' ? ' このブラウザでは webm という形式になります。LINE で送れないときは、保存してから LINE で選んでください。' : '');
   $('result').classList.remove('hidden'); $('btnReset').classList.remove('hidden');
   console.log('done', Math.round((Date.now() - t0) / 1000) + 's', before, '->', after, r.mime);
@@ -381,7 +384,14 @@ $('btnCancel').addEventListener('click', function () { this.blur(); if (state.jo
 $('btnResume').addEventListener('click', function () { this.blur(); if (state.job) state.job.resume().catch(function () {}); });
 $('btnShare').addEventListener('click', function () {
   this.blur();
-  navigator.share({ files: [state.out.file], title: '動画' }).catch(function (e) { if (e && e.name !== 'AbortError') { console.error(e); $('status').textContent = '送れませんでした。「保存する」をためしてください'; } });
+  var hint = $('shareHint');
+  navigator.share({ files: [state.out.file], title: '動画' }).then(function () { hint.textContent = '送りました。'; })
+    .catch(function (e) {
+      if (e && e.name === 'AbortError') return;   // 送り先を選ばずに閉じた
+      console.error(e);
+      hint.textContent = '送れませんでした(' + (e && e.name) + ' ' + (e && e.message || '') + ')。「保存する」で保存してから、LINE で動画を選んで送ってください。';
+      hint.className = 'hint warn';
+    });
 });
 $('btnSave').addEventListener('click', function () {
   this.blur();
