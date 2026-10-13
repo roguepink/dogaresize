@@ -1,31 +1,12 @@
 'use strict';
-/* オフラインでも使えるようにする(ホーム画面に入れたあと、電波がなくても起動する)。
-   アプリは index.html 1枚で完結しているので、それと アイコン類だけを覚えておく。
-   アプリを直しただけなら VERSION は そのままでいい(開くたびに、まずネットで最新を取りにいくので)。
-   FILES(覚えるファイル)を変えたときだけ VERSION を 1つ上げる(古い覚えを 一斉に捨てる)。 */
-const VERSION = 'dogaresize-v1';
-const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'maskable-512.png', 'apple-touch-icon.png'];
-
-self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
-});
-
+/* 動画リサイズは roguepink.github.io/resize/ に まとめた(2026-10-13)。
+   前にホーム画面に入れた人のために、覚えた古い版を全部消して、自分(この登録)も外し、開いている画面を新しいアドレスへ移す。 */
+self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => {
   e.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k)))).then(() => self.clients.claim())
-  );
-});
-
-/* 開くときは まずネットで最新を取りにいく。つながらなければ 覚えているものを出す。 */
-self.addEventListener('fetch', (e) => {
-  const req = e.request;
-  if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
-  e.respondWith(
-    fetch(req)
-      .then((res) => {
-        if (res.ok) { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(req, copy)); }
-        return res;
-      })
-      .catch(() => caches.match(req).then((hit) => hit || caches.match('index.html')))
+    caches.keys().then((ks) => Promise.all(ks.map((k) => caches.delete(k))))
+      .then(() => self.registration.unregister())
+      .then(() => self.clients.matchAll({ type: 'window' }))
+      .then((cs) => cs.forEach((c) => c.navigate('https://roguepink.github.io/resize/#video').catch(() => {})))
   );
 });
